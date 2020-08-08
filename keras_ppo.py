@@ -85,7 +85,8 @@ class PPOAgent(object):
                 keras_backend.minimum(r * advantage, keras_backend.clip(r, min_value=1 - LOSS_CLIPPING,
                                                                         max_value=1 + LOSS_CLIPPING) * advantage) +
                 ENTROPY_LOSS * -(
-                        prob * keras_backend.log(prob + 1e-10)))
+                        keras_backend.sum(y_pred * keras_backend.log(y_pred + 1e-10), axis=-1)
+                ))
 
         return loss
 
