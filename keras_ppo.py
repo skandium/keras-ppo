@@ -10,7 +10,9 @@ from keras.models import Model
 from keras import backend as keras_backend
 from keras import optimizers
 
-GAME = "CartPole-v0"
+GAME = "MountainCarContinuous-v0"
+# GAME = "LunarLander-v2"
+# GAME = "CartPole-v0"
 
 LOSS_CLIPPING = 0.2  # Only implemented clipping for the surrogate loss, paper said it was best
 EPOCHS = 10
@@ -22,16 +24,22 @@ LR = 1e-4  # Lower lr stabilises training greatly
 HIDDEN_DIMS = [64, 64]
 ENTROPY_LOSS = 1e-3
 
+NOISE = 1.0
+
 
 class PPOAgent(object):
 
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim, continuous):
 
         self.input_dim = input_dim
         self.output_dim = output_dim
 
-        self.__build_actor()
-        self.__build_critic()
+        if not continuous:
+            self.__build_actor()
+            self.__build_critic()
+        else:
+            self.__build_actor_continuous()
+            self.__build_critic()
 
     def __build_actor(self):
         """Policy-based network that will make use of the PPO loss function"""
@@ -47,6 +55,28 @@ class PPOAgent(object):
 
         net = layers.Dense(self.output_dim)(net)
         net = layers.Activation("softmax")(net)
+
+        model = Model(inputs=[self.X, advantage, old_prediction], outputs=[net])
+        model.compile(optimizer=optimizers.Adam(lr=LR), loss=self.ppo_loss(advantage=advantage,
+                                                                           old_prediction=old_prediction))
+        model.summary()
+
+        self.actor = model
+
+    def __build_actor_continuous(self):
+        """Policy-based network that will make use of the PPO loss function"""
+        advantage = layers.Input(shape=(1,))
+        old_prediction = layers.Input(shape=(self.output_dim,))
+
+        self.X = layers.Input(shape=(self.input_dim,))
+        net = self.X
+
+        for h_dim in HIDDEN_DIMS:
+            net = layers.Dense(h_dim)(net)
+            net = layers.Activation("relu")(net)
+
+        net = layers.Dense(self.output_dim)(net)
+        net = layers.Activation("tanh")(net)
 
         model = Model(inputs=[self.X, advantage, old_prediction], outputs=[net])
         model.compile(optimizer=optimizers.Adam(lr=LR), loss=self.ppo_loss(advantage=advantage,
@@ -90,6 +120,24 @@ class PPOAgent(object):
         return loss
 
     @staticmethod
+    def ppo_loss_continuous(advantage, old_prediction):
+        def loss(y_true, y_pred):
+            var = keras_backend.square(NOISE)
+            pi = 3.1415926
+            denom = keras_backend.sqrt(2 * pi * var)
+            prob_num = keras_backend.exp(- keras_backend.square(y_true - y_pred) / (2 * var))
+            old_prob_num = keras_backend.exp(- keras_backend.square(y_true - old_prediction) / (2 * var))
+            prob = prob_num / denom
+            old_prob = old_prob_num / denom
+            r = prob / (old_prob + 1e-10)
+            return -keras_backend.mean(keras_backend.minimum(r * advantage,
+                                                             keras_backend.clip(r, min_value=1 - LOSS_CLIPPING,
+                                                                                max_value=1 +
+                                                                                          LOSS_CLIPPING) * advantage))
+
+        return loss
+
+    @staticmethod
     def discount_rewards(rewards, discount_rate=.99):
         discounted_r = np.zeros_like(rewards, dtype=np.float32)
         running_add = 0
@@ -106,6 +154,13 @@ class PPOAgent(object):
         action = np.random.choice(np.arange(self.output_dim), p=action_prob)
         action_matrix = np.zeros(self.output_dim)
         action_matrix[action] = 1
+        return action, action_matrix, action_prob
+
+    def act_continuous(self, state):
+        state = np.expand_dims(state, axis=0)
+
+        action_prob = np.squeeze(self.actor.predict([state, np.zeros((1, 1)), np.zeros((1, self.output_dim))]))
+        action = action_matrix = action_prob[0] + np.random.normal(loc=0, scale=NOISE, size=action_prob[0].shape)
         return action, action_matrix, action_prob
 
     def get_batch(self, env):
@@ -179,8 +234,17 @@ def main():
     env = gym.make(GAME)
     # supports discrete games for now
     input_dim = env.observation_space.shape[0]
-    output_dim = env.action_space.n
-    agent = PPOAgent(input_dim, output_dim)
+    if isinstance(env.action_space, gym.spaces.Discrete):
+        output_dim = env.action_space.n
+        continuous = False
+    else:
+        output_dim = env.action_space.shape[0]
+        continuous = True
+
+    print("Input dimensions: ", input_dim)
+    print("Output dimensions: ", output_dim)
+
+    agent = PPOAgent(input_dim, output_dim, continuous=continuous)
     agent.run(env)
 
 
